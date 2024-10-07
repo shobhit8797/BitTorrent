@@ -9,16 +9,49 @@ import sys
 #
 # - decode_bencode(b"5:hello") -> b"hello"
 # - decode_bencode(b"10:hello12345") -> b"hello12345"
+def extract_string(data):
+    length, string = data.split(b":", 1)
+    length = int(length)
+    return string[:length], string[length:]
+
+def extract_integer(data):
+    end = data.index(b"e")
+    return int(data[1:end]), data[end+1:]
+
+def decode(data):
+    if data.startswith(b"i"):
+        return extract_integer(data)
+    if chr(data[0]).isdigit():
+        return extract_string(data)
+    if data.startswith(b"l"):
+        data = data[1:]
+        result = []
+        while not data.startswith(b"e"):
+            value, data = decode(data)
+            result.append(value)
+        return result, data[1:]
+    if data.startswith(b"d"):
+        data = data[1:]
+        result = {}
+        while not data.startswith(b"e"):
+            key, data = decode(data)
+            value, data = decode(data)
+            result[key.decode()] = value
+        return result, data[1:]
+    
+
 def decode_bencode(bencoded_value):
-    if chr(bencoded_value[0]).isdigit():
-        first_colon_index = bencoded_value.find(b":")
-        if first_colon_index == -1:
-            raise ValueError("Invalid encoded value")
-        return bencoded_value[first_colon_index+1:]
-    elif chr(bencoded_value[0]) == "i" and chr(bencoded_value[-1] == "e"):
-        return int(bencoded_value[1:-1])
-    else:
-        return bencodepy.decode(bencoded_value)
+    decoded_value, _ = decode(bencoded_value)
+    return decoded_value
+    # if chr(bencoded_value[0]).isdigit():
+    #     first_colon_index = bencoded_value.find(b":")
+    #     if first_colon_index == -1:
+    #         raise ValueError("Invalid encoded value")
+    #     return bencoded_value[first_colon_index+1:]
+    # elif chr(bencoded_value[0]) == "i" and chr(bencoded_value[-1] == "e"):
+    #     return int(bencoded_value[1:-1])
+    # else:
+    #     return bencodepy.decode(bencoded_value)
 
 
 def main():
