@@ -1,9 +1,9 @@
 import json
-import bencodepy
 import sys
 
 # import bencodepy - available if you need it!
 # import requests - available if you need it!
+
 
 # Examples:
 #
@@ -14,9 +14,11 @@ def extract_string(data):
     length = int(length)
     return string[:length], string[length:]
 
+
 def extract_integer(data):
     end = data.index(b"e")
-    return int(data[1:end]), data[end+1:]
+    return int(data[1:end]), data[end + 1 :]
+
 
 def decode(data):
     if data.startswith(b"i"):
@@ -38,7 +40,7 @@ def decode(data):
             value, data = decode(data)
             result[key.decode()] = value
         return result, data[1:]
-    
+
 
 def decode_bencode(bencoded_value):
     decoded_value, _ = decode(bencoded_value)
@@ -54,6 +56,13 @@ def decode_bencode(bencoded_value):
     #     return bencodepy.decode(bencoded_value)
 
 
+def bytes_to_str(data):
+    if isinstance(data, bytes):
+        return data.decode()
+
+    raise TypeError(f"Type not serializable: {type(data)}")
+
+
 def main():
     command = sys.argv[1]
 
@@ -64,13 +73,16 @@ def main():
         # bytestrings since they might contain non utf-8 characters.
         #
         # Let's convert them to strings for printing to the console.
-        def bytes_to_str(data):
-            if isinstance(data, bytes):
-                return data.decode()
-
-            raise TypeError(f"Type not serializable: {type(data)}")
 
         print(json.dumps(decode_bencode(bencoded_value), default=bytes_to_str))
+    elif command == "info":
+        torrent_file = sys.argv[2]
+        with open(torrent_file, "rb") as f:
+            encoded_data = f.read()
+        decoded_data = decode_bencode(encoded_data)
+        print(f"Tracker URL: {decoded_data['announce'].decode()}")
+        print(f"Length: {decoded_data['info']['length']}")
+
     else:
         raise NotImplementedError(f"Unknown command {command}")
 
