@@ -80,9 +80,14 @@ def main():
         with open(torrent_file, "rb") as f:
             encoded_data = f.read()
         decoded_data = decode_bencode(encoded_data)
+        print(decoded_data)
         print(f"Tracker URL: {decoded_data['announce'].decode()}")
         print(f"Length: {decoded_data['info']['length']}")
         print(f"Info Hash: {hashlib.sha1(bencodepy.encode(decoded_data['info'])).hexdigest()}")
+        print(f"Piece Length: {decoded_data['info']['piece length']}")
+        print(f"Piece Hashes:")
+        for piece_index in range(0, len(decoded_data['info']['pieces']), 20):
+            print(decoded_data['info']['pieces'][piece_index: piece_index+20].hex())
 
     else:
         raise NotImplementedError(f"Unknown command {command}")
