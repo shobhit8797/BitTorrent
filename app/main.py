@@ -2,7 +2,7 @@ import json
 import sys
 import hashlib
 import bencodepy
-# import requests - available if you need it!
+import requests
 
 
 # Examples:
@@ -62,6 +62,11 @@ def bytes_to_str(data):
 
     raise TypeError(f"Type not serializable: {type(data)}")
 
+def get_torrent_file_info(torrent_file):
+    with open(torrent_file, "rb") as f:
+        encoded_data = f.read()
+    decoded_data = decode_bencode(encoded_data)
+    return decoded_data
 
 def main():
     command = sys.argv[1]
@@ -77,10 +82,7 @@ def main():
         print(json.dumps(decode_bencode(bencoded_value), default=bytes_to_str))
     elif command == "info":
         torrent_file = sys.argv[2]
-        with open(torrent_file, "rb") as f:
-            encoded_data = f.read()
-        decoded_data = decode_bencode(encoded_data)
-        print(decoded_data)
+        decoded_data = get_torrent_file_info(torrent_file)
         print(f"Tracker URL: {decoded_data['announce'].decode()}")
         print(f"Length: {decoded_data['info']['length']}")
         print(f"Info Hash: {hashlib.sha1(bencodepy.encode(decoded_data['info'])).hexdigest()}")
@@ -88,6 +90,26 @@ def main():
         print(f"Piece Hashes:")
         for piece_index in range(0, len(decoded_data['info']['pieces']), 20):
             print(decoded_data['info']['pieces'][piece_index: piece_index+20].hex())
+    elif command == "peers":
+        torrent_file = sys.argv[2]
+        decoded_data = get_torrent_file_info(torrent_file)
+        
+        tracker_url = decoded_data["announce"].decode()
+        
+        response = requests.get(tracker_url, params={
+            "info_hash": hashlib.sha1(bencodepy.encode(decoded_data["info"])).digest(),
+            "peer_id": "00112233445566778899",
+            "port": 6881,
+            "uploaded": 0,
+            "downloaded": 0,
+            "left": decoded_data["info"]["length"],
+            "compact": 1
+        })
+        decoded_response = decode_bencode(response.content)
+        for peer_ip in range(0, len(decoded_response['peers']), 6):
+            ip = ".".join(str(decoded_response['peers'][peer_ip + i]) for i in range(4))
+            port = decoded_response['peers'][peer_ip + 4] << 8 | decoded_response['peers'][peer_ip + 5]
+            print(f"{ip}:{port}")
 
     else:
         raise NotImplementedError(f"Unknown command {command}")
