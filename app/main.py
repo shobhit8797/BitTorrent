@@ -104,11 +104,28 @@ def get_peer_id(client_socket, ip, port, info_hash):
     return reply[48:].hex()  # Peer ID is the last 20 bytes
 
 
-def read_peer_message(client_socket):
+def read_peer_message(client_socket, to_print=False):
+    # Read the message length
     message_length = struct.unpack(">I", client_socket.recv(4))[0]
-    print(message_length)
     message_id = int(client_socket.recv(1)[0])
-    payload = client_socket.recv(message_length - 1) if message_length > 1 else b""
+
+    # Initialize an empty byte array to store the payload
+    payload = b""
+    bytes_remaining = message_length - 1
+
+    # Keep receiving data until we have received the full payload
+    while bytes_remaining > 0:
+        chunk = client_socket.recv(bytes_remaining)
+        if not chunk:
+            raise ConnectionError("Connection lost while receiving payload")
+        payload += chunk
+        bytes_remaining -= len(chunk)
+
+    if to_print:
+        print("-" * 50)
+        print(f"Message Length: {message_length}")
+        print(f"Payload length: {len(payload)}")
+        print("-" * 50)
 
     return message_id, payload
 
@@ -125,31 +142,112 @@ def download_piece(client_socket, piece_index, piece_length):
     """Download an entire piece by requesting blocks of 16 KiB."""
     block_size = 2**14  # 16 KiB blocks
     blocks = []
-    downloaded_length = 0
 
-    # Calculate how many blocks are needed for the entire piece
-    while downloaded_length < piece_length:
-        block_offset = downloaded_length
-        block_length = min(block_size, piece_length - downloaded_length)
+    no_of_blocks = (piece_length) // block_size
+    print(f"Number of blocks: {no_of_blocks}")
 
-        # Send request for a block within the piece
-        send_request(client_socket, piece_index, block_offset, block_length)
-        print(
-            f"Requested block {block_offset} of piece {piece_index}, length {block_length}"
-        )
+    for i in range(no_of_blocks):
+        send_request(client_socket, piece_index, i * block_size, block_size)
+        print(f"Requested block {i} of piece {piece_index}, length {block_size}")
 
-        # Wait for a piece message (message ID = 7)
         message_id, payload = read_peer_message(client_socket)
-        while message_id != 7:  # Waiting for 'piece' message
+        while message_id != 7:
             message_id, payload = read_peer_message(client_socket)
 
-        block_data = payload[8:]  # Skip the first 8 bytes (piece index + block offset)
+        block_data = payload[8:]
+        blocks.append(block_data)
+    
+
+    if piece_length % block_size:
+        i += 1
+        send_request(
+            client_socket,
+            piece_index,
+            i * block_size,
+            (piece_length - (i * block_size)),
+        )
+        print(
+            f"Requested block {i} of piece {piece_index}, length {(piece_length - (i * block_size))}"
+        )
+
+        message_id, payload = read_peer_message(client_socket)
+        assert message_id == 7
+
+        block_data = payload[8:]
         blocks.append(block_data)
 
-        # Update how much data we've downloaded for this piece
-        downloaded_length += len(block_data)
+    return b"".join(blocks)
 
-    return b"".join(blocks)  # Return the full piece data
+
+def download_file(torrent_file, output_file):
+    decoded_data = get_torrent_file_info(torrent_file)
+    file_length = decoded_data["info"]["length"]
+    piece_length = decoded_data["info"]["piece length"]
+    total_pieces = (file_length + piece_length - 1) // piece_length
+    pieces_hashes = [
+        decoded_data["info"]["pieces"][i : i + 20]
+        for i in range(0, len(decoded_data["info"]["pieces"]), 20)
+    ]
+    print(
+        f"File Length: {file_length}, Piece Length: {piece_length}, Total Pieces: {total_pieces}"
+    )
+
+    # Discover peers
+    peers = discover_peers(torrent_file)
+    if not peers:
+        print("No peers found.")
+        return
+
+    print(f"Found {len(peers)} peers. Connecting to the first one...")
+
+    # Connect to the first available peer
+    peer_ip, peer_port = peers[0].split(":")
+    _socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    _socket.settimeout(10)
+
+    info_hash = hashlib.sha1(bencodepy.encode(decoded_data["info"])).digest()
+    peer_id = get_peer_id(_socket, peer_ip, peer_port, info_hash)
+
+    print(f"Connected to peer {peer_ip}:{peer_port}, Peer ID: {peer_id}")
+
+    # Wait for the bitfield message (message ID = 5)
+    message_id, _ = read_peer_message(_socket)
+    while message_id != 5:
+        message_id, _ = read_peer_message(_socket)
+
+    # Send interested message (message ID = 2)
+    _socket.sendall(struct.pack(">IB", 1, 2))
+
+    # Wait for unchoke message (message ID = 1)
+    message_id, _ = read_peer_message(_socket)
+    while message_id != 1:
+        message_id, _ = read_peer_message(_socket)
+
+    # Open the output file in write mode
+    with open(output_file, "wb") as f:
+        # Loop through each piece index
+        for piece_index in range(total_pieces):
+            # Calculate piece length (handle last piece separately)
+            if piece_index == total_pieces - 1:
+                piece_length = file_length % decoded_data["info"]["piece length"]
+                if piece_length == 0:
+                    piece_length = decoded_data["info"]["piece length"]
+
+            # Download the piece
+            piece_data = download_piece(_socket, piece_index, piece_length)
+
+            # Verify piece integrity
+            piece_hash = hashlib.sha1(piece_data).digest()
+            if piece_hash != pieces_hashes[piece_index]:
+                print(f"Piece {piece_index} hash mismatch. Re-trying...")
+                continue  # Re-download the piece if the hash doesn't match
+
+            # Write the piece to the output file
+            f.write(piece_data)
+            print(f"Piece {piece_index} downloaded and verified.")
+
+    print(f"File downloaded successfully to {output_file}")
+    _socket.close()
 
 
 def main():
@@ -192,7 +290,7 @@ def main():
         piece_index = int(sys.argv[5])
 
         _socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        _socket.settimeout(10)  # 10-second timeout for socket operations
+        # _socket.settimeout(10)  # 10-second timeout for socket operations
 
         decoded_data = get_torrent_file_info(torrent_file)
 
@@ -220,12 +318,18 @@ def main():
 
         # Adjust for the last piece if necessary
         total_pieces = (file_length + piece_length - 1) // piece_length
+
+        print(
+            f"File Length: {file_length}, Piece Length: {piece_length}, Total Pieces: {total_pieces}"
+        )
         if piece_index == total_pieces - 1:
             piece_length = file_length % piece_length
+            print(f"Last piece length: {piece_length}")
             if piece_length == 0:
                 piece_length = decoded_data["info"]["piece length"]
 
         # Download the piece
+        print(f"Downloading piece {piece_index}... and piece length {piece_length}")
         piece_data = download_piece(_socket, piece_index, piece_length)
 
         # Write the downloaded piece to the output file
@@ -234,6 +338,17 @@ def main():
 
         print(f"Piece {piece_index} downloaded successfully.")
         _socket.close()
+
+    elif command == "download":
+        _ = sys.argv[2]
+        output_file = sys.argv[3]
+        torrent_file = sys.argv[4]
+
+        # if os.path.exists(output_file):
+        #     print(f"Output file {output_file} already exists.")
+        #     sys.exit(1)
+
+        download_file(torrent_file, output_file)
 
     else:
         raise NotImplementedError(f"Unknown command {command}")
